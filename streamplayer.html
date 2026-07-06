@@ -1,0 +1,655 @@
+<!-- 
+  CUSTOM STREAM PLAYER TEMPLATE
+  -----------------------------
+  Isme apna khud ka content daalne ke liye 2 jagah hain (neeche CONFIG section mai):
+    1) SERVERS array -> har server ka "src" apni video link se replace karein
+    2) DOWNLOAD_URL -> download button ke liye link
+
+  Note: Google Drive/Archive.org jaisi links seedha <video src> mai kaam nahi karti 
+  (unka format stream ke liye nahi banaya gaya / CORS block karta hai). 
+  Isliye "src" mai aisi direct video file URL daalein jo aap khud host karte hain 
+  (apna server, S3/CDN, ya koi bhi direct .mp4/.m3u8 link jiske rights aapke paas hain).
+-->
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamBox</title>
+<style>
+  :root{
+    --bg-void: #0a0a0d;
+    --bg-panel: #131316;
+    --bg-panel-raised: #1b1b1f;
+    --marquee-gold: #d4a437;
+    --marquee-gold-dim: #8a6f26;
+    --text-primary: #f2efe9;
+    --text-muted: #9a978f;
+    --danger: #d4453a;
+    --radius: 10px;
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  @font-face{
+    font-family:'Marquee';
+    src:local('Georgia');
+  }
+
+  body{
+    background:var(--bg-void);
+    color:var(--text-primary);
+    font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:24px 16px 60px;
+  }
+
+  .brand{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:22px;
+  }
+  .brand-mark{
+    width:34px;height:34px;
+    border:2px solid var(--marquee-gold);
+    border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-family:Georgia,serif;
+    font-weight:700;
+    color:var(--marquee-gold);
+    font-size:16px;
+  }
+  .brand-name{
+    font-family:Georgia,serif;
+    letter-spacing:2px;
+    font-size:20px;
+    color:var(--text-primary);
+  }
+  .brand-name span{ color:var(--marquee-gold); }
+
+  .stage{
+    width:100%;
+    max-width:960px;
+  }
+
+  /* ---------- SERVER TICKET ROW ---------- */
+  .server-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:14px;
+    flex-wrap:wrap;
+  }
+  .server-label{
+    font-size:11px;
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    color:var(--text-muted);
+    margin-right:4px;
+  }
+  .server-btn{
+    position:relative;
+    background:var(--bg-panel);
+    border:1px solid #2a2a30;
+    color:var(--text-muted);
+    padding:8px 16px;
+    border-radius:20px;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    transition:all .2s ease;
+    display:flex;
+    align-items:center;
+    gap:7px;
+  }
+  .server-btn .dot{
+    width:7px;height:7px;border-radius:50%;
+    background:var(--text-muted);
+    transition:background .2s ease;
+  }
+  .server-btn:hover{ border-color:var(--marquee-gold-dim); color:var(--text-primary); }
+  .server-btn.active{
+    background:linear-gradient(180deg, #2a220f, var(--bg-panel));
+    border-color:var(--marquee-gold);
+    color:var(--marquee-gold);
+  }
+  .server-btn.active .dot{ background:#4ade80; box-shadow:0 0 6px #4ade80; }
+
+  /* ---------- PLAYER ---------- */
+  .player-shell{
+    position:relative;
+    width:100%;
+    aspect-ratio:16/9;
+    background:#000;
+    border-radius:var(--radius);
+    overflow:hidden;
+    box-shadow:0 20px 60px -20px rgba(0,0,0,.8), 0 0 0 1px #222;
+  }
+  video{
+    width:100%;
+    height:100%;
+    display:block;
+    background:#000;
+    object-fit:contain;
+  }
+
+  .buffer-veil{
+    position:absolute; inset:0;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    background:rgba(0,0,0,.35);
+    pointer-events:none;
+  }
+  .buffer-veil.show{ display:flex; }
+  .spinner{
+    width:42px;height:42px;
+    border-radius:50%;
+    border:3px solid rgba(212,164,55,.25);
+    border-top-color:var(--marquee-gold);
+    animation:spin .8s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  .center-play{
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+    background:transparent;
+  }
+  .center-play .ring{
+    width:74px;height:74px;
+    border-radius:50%;
+    background:rgba(20,20,22,.55);
+    border:1.5px solid rgba(212,164,55,.6);
+    display:flex;align-items:center;justify-content:center;
+    backdrop-filter:blur(4px);
+    transition:transform .15s ease, background .15s ease;
+  }
+  .center-play:hover .ring{ transform:scale(1.07); background:rgba(20,20,22,.75); }
+  .center-play svg{ width:26px; height:26px; fill:var(--marquee-gold); margin-left:3px; }
+  .center-play.hidden{ display:none; }
+
+  .controls{
+    position:absolute;
+    left:0; right:0; bottom:0;
+    padding:10px 14px 12px;
+    background:linear-gradient(to top, rgba(0,0,0,.85) 0%, rgba(0,0,0,.5) 55%, transparent 100%);
+    opacity:0;
+    transform:translateY(6px);
+    transition:opacity .25s ease, transform .25s ease;
+  }
+  .player-shell.show-controls .controls,
+  .player-shell.paused .controls{
+    opacity:1;
+    transform:translateY(0);
+  }
+
+  .progress-wrap{
+    position:relative;
+    height:14px;
+    display:flex;
+    align-items:center;
+    cursor:pointer;
+    margin-bottom:8px;
+  }
+  .progress-track{
+    position:relative;
+    width:100%; height:4px;
+    background:rgba(255,255,255,.22);
+    border-radius:3px;
+    overflow:visible;
+  }
+  .progress-buffered{
+    position:absolute; left:0; top:0; height:100%;
+    background:rgba(255,255,255,.32);
+    border-radius:3px;
+    width:0%;
+  }
+  .progress-filled{
+    position:absolute; left:0; top:0; height:100%;
+    background:var(--marquee-gold);
+    border-radius:3px;
+    width:0%;
+  }
+  .progress-thumb{
+    position:absolute;
+    top:50%;
+    width:12px;height:12px;
+    background:var(--marquee-gold);
+    border-radius:50%;
+    transform:translate(-50%,-50%);
+    left:0%;
+    box-shadow:0 0 0 4px rgba(212,164,55,.2);
+  }
+
+  .controls-row{
+    display:flex;
+    align-items:center;
+    gap:14px;
+  }
+  .controls-row .spacer{ flex:1; }
+
+  .ctrl-btn{
+    background:none; border:none; cursor:pointer;
+    color:var(--text-primary);
+    width:30px;height:30px;
+    display:flex;align-items:center;justify-content:center;
+    opacity:.9;
+    transition:opacity .15s ease, transform .15s ease;
+  }
+  .ctrl-btn:hover{ opacity:1; transform:scale(1.08); }
+  .ctrl-btn svg{ width:19px; height:19px; fill:currentColor; }
+
+  .time-display{
+    font-size:12px;
+    color:var(--text-muted);
+    font-variant-numeric:tabular-nums;
+    min-width:96px;
+    text-align:center;
+  }
+
+  .vol-wrap{
+    display:flex; align-items:center; gap:6px;
+  }
+  .vol-slider{
+    width:70px;
+    accent-color:var(--marquee-gold);
+    cursor:pointer;
+  }
+
+  .speed-btn{
+    font-size:12px;
+    font-weight:600;
+    color:var(--text-muted);
+    background:none;border:none;cursor:pointer;
+    padding:4px 8px;
+    border-radius:6px;
+  }
+  .speed-btn:hover{ background:rgba(255,255,255,.08); color:var(--text-primary); }
+
+  @media (max-width: 560px){
+    .vol-wrap{ display:none; }
+    .controls-row{ gap:8px; }
+    .time-display{ min-width:78px; font-size:11px; }
+  }
+
+  /* ---------- BELOW PLAYER ---------- */
+  .action-row{
+    display:flex;
+    gap:10px;
+    margin-top:16px;
+    flex-wrap:wrap;
+  }
+  .action-btn{
+    display:flex; align-items:center; gap:8px;
+    padding:11px 18px;
+    border-radius:8px;
+    font-size:14px;
+    font-weight:600;
+    cursor:pointer;
+    border:1px solid #2a2a30;
+    text-decoration:none;
+    color:var(--text-primary);
+    background:var(--bg-panel);
+    transition:all .2s ease;
+  }
+  .action-btn svg{ width:16px;height:16px; fill:currentColor; }
+  .action-btn.primary{
+    background:var(--marquee-gold);
+    color:#1a1405;
+    border-color:var(--marquee-gold);
+  }
+  .action-btn.primary:hover{ background:#e0b449; }
+  .action-btn:not(.primary):hover{ border-color:var(--marquee-gold-dim); }
+
+  .divider{
+    height:1px;
+    background:linear-gradient(to right, transparent, #2a2a30, transparent);
+    margin:34px 0 26px;
+  }
+
+  /* ---------- REQUEST / SUGGESTION ---------- */
+  .request-panel{
+    background:var(--bg-panel);
+    border:1px solid #222226;
+    border-radius:var(--radius);
+    padding:22px 22px 24px;
+  }
+  .request-line{
+    font-size:14px;
+    color:var(--text-muted);
+    text-align:center;
+  }
+  .request-line a{ color:var(--marquee-gold); text-decoration:none; font-weight:600; }
+  .request-line a:hover{ text-decoration:underline; }
+
+  .toast{
+    position:fixed;
+    bottom:24px; left:50%;
+    transform:translateX(-50%) translateY(20px);
+    background:var(--bg-panel-raised);
+    border:1px solid var(--marquee-gold-dim);
+    color:var(--text-primary);
+    padding:12px 20px;
+    border-radius:8px;
+    font-size:13px;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .25s ease, transform .25s ease;
+    z-index:50;
+  }
+  .toast.show{
+    opacity:1;
+    transform:translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+
+  <div class="brand">
+    <div class="brand-name">🙏 Just <span>Jai Ho</span></div>
+  </div>
+
+  <div class="stage">
+
+    <div class="server-row">
+      <span class="server-label">Server</span>
+      <button class="server-btn active" data-index="0"><span class="dot"></span>Server 1</button>
+      <button class="server-btn" data-index="1"><span class="dot"></span>Server 2</button>
+      <button class="server-btn" data-index="2"><span class="dot"></span>Server 3</button>
+    </div>
+
+    <div class="player-shell" id="playerShell">
+      <video id="video" playsinline></video>
+
+      <div class="buffer-veil" id="bufferVeil"><div class="spinner"></div></div>
+
+      <div class="center-play" id="centerPlay">
+        <div class="ring">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </div>
+      </div>
+
+      <div class="controls" id="controls">
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-track">
+            <div class="progress-buffered" id="progressBuffered"></div>
+            <div class="progress-filled" id="progressFilled"></div>
+            <div class="progress-thumb" id="progressThumb"></div>
+          </div>
+        </div>
+
+        <div class="controls-row">
+          <button class="ctrl-btn" id="playBtn" title="Play/Pause">
+            <svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+
+          <div class="vol-wrap">
+            <button class="ctrl-btn" id="muteBtn" title="Mute">
+              <svg id="volIcon" viewBox="0 0 24 24"><path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            </button>
+            <input type="range" class="vol-slider" id="volSlider" min="0" max="1" step="0.01" value="1">
+          </div>
+
+          <span class="time-display" id="timeDisplay">0:00 / 0:00</span>
+
+          <div class="spacer"></div>
+
+          <button class="speed-btn" id="speedBtn">1x</button>
+
+          <button class="ctrl-btn" id="pipBtn" title="Picture-in-Picture">
+            <svg viewBox="0 0 24 24"><path d="M19 7H9a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2V9a2 2 0 00-2-2zm-1 8h-8v-4h8v4zM3 5h12v2H3V5zm0 4h4v2H3V9zm0 4h4v2H3v-2z" opacity=".0"/><path d="M21 3H3a1 1 0 00-1 1v13a1 1 0 001 1h6v2H7v2h10v-2h-2v-2h6a1 1 0 001-1V4a1 1 0 00-1-1zm-1 13H4V5h16v11zm-8-8h6v5h-6V9z"/></svg>
+          </button>
+
+          <button class="ctrl-btn" id="fullscreenBtn" title="Fullscreen">
+            <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="action-row">
+      <a href="#" id="whatsappBtn" class="action-btn primary">
+        <svg viewBox="0 0 24 24"><path d="M17.47 14.38c-.29-.15-1.73-.85-2-.95-.27-.1-.46-.15-.66.15-.2.29-.76.95-.93 1.14-.17.2-.34.22-.63.07-.29-.15-1.22-.45-2.32-1.43-.86-.76-1.44-1.71-1.61-2-.17-.29-.02-.45.13-.6.13-.13.29-.34.44-.51.15-.17.2-.29.29-.49.1-.2.05-.37-.02-.51-.07-.15-.66-1.59-.9-2.18-.24-.57-.48-.49-.66-.5-.17-.01-.37-.01-.56-.01-.2 0-.51.07-.78.37-.27.29-1.02 1-1.02 2.44 0 1.44 1.05 2.83 1.2 3.02.15.2 2.07 3.16 5.02 4.43.7.3 1.25.48 1.68.62.7.22 1.34.19 1.85.11.56-.08 1.73-.71 1.97-1.39.24-.68.24-1.27.17-1.39-.07-.12-.26-.19-.55-.34z"/><path d="M12 2C6.48 2 2 6.48 2 12c0 1.85.5 3.58 1.38 5.07L2 22l5.09-1.34C8.53 21.51 10.21 22 12 22c5.52 0 10-4.48 10-10S17.52 2 12 2zm0 18c-1.58 0-3.05-.46-4.29-1.25l-.31-.19-3.02.8.81-2.94-.2-.31A7.93 7.93 0 014 12c0-4.41 3.59-8 8-8s8 3.59 8 8-3.59 8-8 8z"/></svg>
+        WhatsApp
+      </a>
+      <a href="#" id="facebookBtn" class="action-btn">
+        <svg viewBox="0 0 24 24"><path d="M22 12a10 10 0 10-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.49-3.89 3.78-3.89 1.1 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.78l-.44 2.89h-2.34v6.99A10 10 0 0022 12z"/></svg>
+        Facebook
+      </a>
+      <button class="action-btn" id="copyLinkBtn">
+        <svg viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
+        Copy
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="request-panel">
+      <div class="request-line">
+        Request or Suggestion — Email: <a href="mailto:jaiho2026@givmail.com" id="mailtoLink">jaiho2026@givmail.com</a>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+/* ================= CONFIG — apna content yahan daalein ================= */
+const REQUEST_EMAIL = "jaiho2026@givmail.com";
+
+const SERVERS = [
+  { name: "Server 1", src: "" /* <-- yahan apni direct video URL (mp4/m3u8) daalein */ },
+  { name: "Server 2", src: "" /* <-- backup source 2 */ },
+  { name: "Server 3", src: "" /* <-- backup source 3 */ }
+];
+
+const DOWNLOAD_URL = ""; // <-- download button ke liye direct file link
+/* ========================================================================= */
+
+const video = document.getElementById('video');
+const shell = document.getElementById('playerShell');
+const centerPlay = document.getElementById('centerPlay');
+const playBtn = document.getElementById('playBtn');
+const playIcon = document.getElementById('playIcon');
+const muteBtn = document.getElementById('muteBtn');
+const volIcon = document.getElementById('volIcon');
+const volSlider = document.getElementById('volSlider');
+const timeDisplay = document.getElementById('timeDisplay');
+const progressWrap = document.getElementById('progressWrap');
+const progressFilled = document.getElementById('progressFilled');
+const progressBuffered = document.getElementById('progressBuffered');
+const progressThumb = document.getElementById('progressThumb');
+const speedBtn = document.getElementById('speedBtn');
+const pipBtn = document.getElementById('pipBtn');
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+const bufferVeil = document.getElementById('bufferVeil');
+const whatsappBtn = document.getElementById('whatsappBtn');
+const facebookBtn = document.getElementById('facebookBtn');
+const copyLinkBtn = document.getElementById('copyLinkBtn');
+const toast = document.getElementById('toast');
+
+const PLAY_ICON = '<path d="M8 5v14l11-7z"/>';
+const PAUSE_ICON = '<path d="M6 5h4v14H6zm8 0h4v14h-4z"/>';
+const VOL_ON = '<path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>';
+const VOL_MUTE = '<path d="M16.5 12A4.5 4.5 0 0014 7.97v2.21l2.45 2.45c.03-.2.05-.42.05-.63zM19 12c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>';
+
+let currentIndex = 0;
+
+function fmt(t){
+  if(!isFinite(t)) return "0:00";
+  const m = Math.floor(t/60);
+  const s = Math.floor(t%60).toString().padStart(2,'0');
+  return `${m}:${s}`;
+}
+
+function loadServer(i){
+  currentIndex = i;
+  document.querySelectorAll('.server-btn').forEach((b,idx)=>{
+    b.classList.toggle('active', idx===i);
+  });
+  const s = SERVERS[i];
+  if(s.src){
+    video.src = s.src;
+    video.load();
+  } else {
+    showToast(`${s.name}: source URL abhi set nahi hai — CONFIG mai src daalein`);
+  }
+}
+
+document.querySelectorAll('.server-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=> loadServer(parseInt(btn.dataset.index)));
+});
+
+function togglePlay(){
+  if(video.paused){ video.play(); } else { video.pause(); }
+}
+centerPlay.addEventListener('click', togglePlay);
+playBtn.addEventListener('click', togglePlay);
+
+video.addEventListener('play', ()=>{
+  playIcon.innerHTML = PAUSE_ICON;
+  centerPlay.classList.add('hidden');
+  shell.classList.remove('paused');
+});
+video.addEventListener('pause', ()=>{
+  playIcon.innerHTML = PLAY_ICON;
+  centerPlay.classList.remove('hidden');
+  shell.classList.add('paused');
+});
+video.addEventListener('waiting', ()=> bufferVeil.classList.add('show'));
+video.addEventListener('playing', ()=> bufferVeil.classList.remove('show'));
+video.addEventListener('canplay', ()=> bufferVeil.classList.remove('show'));
+
+video.addEventListener('timeupdate', ()=>{
+  const pct = (video.currentTime / (video.duration||1)) * 100;
+  progressFilled.style.width = pct + '%';
+  progressThumb.style.left = pct + '%';
+  timeDisplay.textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+});
+video.addEventListener('progress', ()=>{
+  if(video.buffered.length){
+    const end = video.buffered.end(video.buffered.length-1);
+    const pct = (end / (video.duration||1)) * 100;
+    progressBuffered.style.width = pct + '%';
+  }
+});
+
+let seeking = false;
+function seekFromEvent(e){
+  const rect = progressWrap.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  let pct = (clientX - rect.left) / rect.width;
+  pct = Math.min(1, Math.max(0, pct));
+  video.currentTime = pct * (video.duration||0);
+  progressFilled.style.width = (pct*100)+'%';
+  progressThumb.style.left = (pct*100)+'%';
+}
+progressWrap.addEventListener('mousedown', e=>{ seeking = true; seekFromEvent(e); });
+window.addEventListener('mousemove', e=>{ if(seeking) seekFromEvent(e); });
+window.addEventListener('mouseup', ()=> seeking=false);
+progressWrap.addEventListener('touchstart', e=>{ seeking=true; seekFromEvent(e); });
+progressWrap.addEventListener('touchmove', e=>{ if(seeking) seekFromEvent(e); });
+progressWrap.addEventListener('touchend', ()=> seeking=false);
+
+muteBtn.addEventListener('click', ()=>{
+  video.muted = !video.muted;
+  volIcon.innerHTML = video.muted ? VOL_MUTE : VOL_ON;
+  volSlider.value = video.muted ? 0 : video.volume;
+});
+volSlider.addEventListener('input', ()=>{
+  video.volume = volSlider.value;
+  video.muted = volSlider.value == 0;
+  volIcon.innerHTML = video.muted ? VOL_MUTE : VOL_ON;
+});
+
+const speeds = [1, 1.25, 1.5, 2, 0.75];
+let speedIdx = 0;
+speedBtn.addEventListener('click', ()=>{
+  speedIdx = (speedIdx+1) % speeds.length;
+  video.playbackRate = speeds[speedIdx];
+  speedBtn.textContent = speeds[speedIdx] + 'x';
+});
+
+pipBtn.addEventListener('click', async ()=>{
+  try{
+    if(document.pictureInPictureElement){
+      await document.exitPictureInPicture();
+    } else {
+      await video.requestPictureInPicture();
+    }
+  }catch(err){
+    showToast('PIP mode is is browser mai support nahi karta');
+  }
+});
+
+fullscreenBtn.addEventListener('click', ()=>{
+  if(!document.fullscreenElement){
+    shell.requestFullscreen?.();
+  } else {
+    document.exitFullscreen?.();
+  }
+});
+
+let hideTimer;
+function revealControls(){
+  shell.classList.add('show-controls');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(()=>{
+    if(!video.paused) shell.classList.remove('show-controls');
+  }, 2800);
+}
+shell.addEventListener('mousemove', revealControls);
+shell.addEventListener('touchstart', revealControls);
+shell.addEventListener('mouseleave', ()=>{
+  if(!video.paused) shell.classList.remove('show-controls');
+});
+
+document.addEventListener('keydown', (e)=>{
+  if(!shell.contains(document.activeElement) && document.activeElement !== document.body) return;
+  if(e.code === 'Space'){ e.preventDefault(); togglePlay(); }
+  if(e.code === 'ArrowRight'){ video.currentTime += 10; }
+  if(e.code === 'ArrowLeft'){ video.currentTime -= 10; }
+});
+
+function showToast(msg){
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=> toast.classList.remove('show'), 2600);
+}
+
+function getShareUrl(){
+  return window.location.href;
+}
+
+whatsappBtn.addEventListener('click', (e)=>{
+  e.preventDefault();
+  const url = encodeURIComponent(getShareUrl());
+  const text = encodeURIComponent('Ye dekho: ');
+  window.open(`https://wa.me/?text=${text}${url}`, '_blank');
+});
+
+facebookBtn.addEventListener('click', (e)=>{
+  e.preventDefault();
+  const url = encodeURIComponent(getShareUrl());
+  window.open(`https://www.facebook.com/sharer/sharer.php?u=${url}`, '_blank');
+});
+
+copyLinkBtn.addEventListener('click', ()=>{
+  navigator.clipboard?.writeText(getShareUrl());
+  showToast('Link copy ho gaya');
+});
+
+// initial load
+loadServer(0);
+</script>
+
+</body>
+</html>
